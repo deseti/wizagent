@@ -295,6 +295,8 @@ export function HackerTerminal({
   const [sessionFeeLift, setSessionFeeLift] = useState<bigint>(0n);
   const [lastTxHash, setLastTxHash] = useState<Hex | null>(null);
   const [lastGrossCharge, setLastGrossCharge] = useState<bigint | null>(null);
+  const [lastSwapCount, setLastSwapCount] = useState<bigint>(0n);
+  const [lastTreasuryFeeQuote, setLastTreasuryFeeQuote] = useState<bigint>(0n);
   const executionRef = useRef(0);
   const activeExecutionRef = useRef<ActivePayrollExecution | null>(null);
   const glowTimeoutRef = useRef<number | null>(null);
@@ -1031,6 +1033,8 @@ export function HackerTerminal({
 
       const [grossCharge, swapCount, treasuryFeeTotal] = preview;
       setLastGrossCharge(grossCharge);
+      setLastSwapCount(swapCount);
+      setLastTreasuryFeeQuote(treasuryFeeTotal);
       setWalletUsdcBalance(operatorUsdcBalance);
 
       appendLog({
@@ -1310,7 +1314,7 @@ export function HackerTerminal({
                   Execute Global Agentic Payroll (50 Tasks)
                 </button>
                 <p className="action-hint">
-                  Use the sidebar buttons: store session, sync wallet, approve USDC, then click execute.
+                  One payroll sweep submits 1 sponsored batch transaction that emits 50 AgentPaid events and 50+ transfer rows on the explorer.
                 </p>
               </div>
 
@@ -1504,19 +1508,27 @@ export function HackerTerminal({
             <div className="treasury-metrics">
               <div>
                 <span>LP Fee</span>
-                <strong>0.300%</strong>
+                <strong>
+                  {lastSwapCount > 0n
+                    ? `${formatAmount(lastTreasuryFeeQuote, usdcDecimals, 6, 6)} USDC this run`
+                    : "0.300% on EURC swaps"}
+                </strong>
               </div>
               <div>
                 <span>Settlement Mode</span>
-                <strong>USDC / EURC</strong>
+                <strong>{lastSwapCount > 0n ? "USDC + EURC this run" : "USDC only this run"}</strong>
               </div>
               <div>
                 <span>Bundler Cost</span>
-                <strong>$0.00</strong>
+                <strong>$0.00 sponsored</strong>
               </div>
               <div>
                 <span>Session Fee Lift</span>
-                <strong>+{formatAmount(sessionFeeLift, usdcDecimals, 6, 6)} USDC</strong>
+                <strong>
+                  {sessionFeeLift > 0n
+                    ? `+${formatAmount(sessionFeeLift, usdcDecimals, 6, 6)} USDC`
+                    : "No treasury fees captured yet"}
+                </strong>
               </div>
             </div>
           </section>
