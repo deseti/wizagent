@@ -127,6 +127,14 @@ function normalizeError(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected error";
 }
 
+function maskSecret(value: string) {
+  if (!value) {
+    return "";
+  }
+
+  return "*".repeat(Math.min(Math.max(value.length, 16), 48));
+}
+
 function waitFor(ms: number) {
   return new Promise<void>((resolve) => {
     window.setTimeout(resolve, ms);
@@ -271,6 +279,9 @@ export function HackerTerminal({
   const [encryptionKeyInput, setEncryptionKeyInput] = useState(
     () => session?.encryptionKey ?? ""
   );
+  const [areCredentialsConcealed, setAreCredentialsConcealed] = useState(
+    () => Boolean(session?.userToken || session?.encryptionKey)
+  );
   const [walletIdInput, setWalletIdInput] = useState("");
   const [walletAddress, setWalletAddress] = useState("");
   const [walletUsdcBalance, setWalletUsdcBalance] = useState<bigint | null>(null);
@@ -297,6 +308,7 @@ export function HackerTerminal({
     ? treasuryAddress.trim() || contractTreasuryAddress.trim() || envTreasuryAddress
     : contractTreasuryAddress.trim() || envTreasuryAddress || treasuryAddress.trim();
   const approvalAmount = DEFAULT_APPROVAL_WHOLE_UNITS * 10n ** BigInt(usdcDecimals);
+  const hasCredentialInputs = Boolean(userTokenInput.trim() || encryptionKeyInput.trim());
 
   const refreshTreasuryBalance = useCallback(async () => {
     if (!publicClient || !displayedTreasuryAddress || !isAddress(displayedTreasuryAddress)) {
@@ -571,6 +583,7 @@ export function HackerTerminal({
       encryptionKey,
       userToken,
     });
+    setAreCredentialsConcealed(true);
     appendLog({
       tag: "AUTH",
       message: "Circle operator session stored for this browser tab.",
@@ -582,6 +595,7 @@ export function HackerTerminal({
     clearSession();
     setUserTokenInput("");
     setEncryptionKeyInput("");
+    setAreCredentialsConcealed(false);
     setWalletIdInput("");
     setTreasuryAddress(envTreasuryAddress);
     setWalletAddress("");
@@ -715,6 +729,7 @@ export function HackerTerminal({
         encryptionKey: key,
         userToken: token,
       });
+      setAreCredentialsConcealed(true);
       triggerInjectionGlow();
 
       await waitFor(220);
@@ -1327,6 +1342,20 @@ export function HackerTerminal({
               <li>After login, copy Dev Credential, then paste them into this form.</li>
             </ol>
 
+            <div className="ops-security-row">
+              <p>
+                Smart Paste and Store Session now hide the Circle credentials automatically.
+              </p>
+              <button
+                className="subtle-button ops-security-button"
+                disabled={!hasCredentialInputs}
+                onClick={() => setAreCredentialsConcealed((current) => !current)}
+                type="button"
+              >
+                {areCredentialsConcealed ? "Reveal Credentials" : "Hide Credentials"}
+              </button>
+            </div>
+
             <div className="ops-field-grid">
               <label
                 className={`terminal-field terminal-field--full ${
@@ -1337,8 +1366,10 @@ export function HackerTerminal({
                 <textarea
                   onChange={(event) => setUserTokenInput(event.target.value.trim())}
                   placeholder="Paste userToken from app.wizpay.xyz"
+                  readOnly={areCredentialsConcealed}
                   rows={3}
-                  value={userTokenInput}
+                  spellCheck={false}
+                  value={areCredentialsConcealed ? maskSecret(userTokenInput) : userTokenInput}
                 />
               </label>
               <label
@@ -1350,8 +1381,14 @@ export function HackerTerminal({
                 <textarea
                   onChange={(event) => setEncryptionKeyInput(event.target.value.trim())}
                   placeholder="Paste encryptionKey from app.wizpay.xyz"
+                  readOnly={areCredentialsConcealed}
                   rows={3}
-                  value={encryptionKeyInput}
+                  spellCheck={false}
+                  value={
+                    areCredentialsConcealed
+                      ? maskSecret(encryptionKeyInput)
+                      : encryptionKeyInput
+                  }
                 />
               </label>
               <label

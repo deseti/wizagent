@@ -460,6 +460,25 @@ h2 {
   margin-top: 18px;
 }
 
+.ops-security-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.ops-security-row p {
+  color: rgba(174, 214, 233, 0.82);
+  font-size: 0.77rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.ops-security-button {
+  flex-shrink: 0;
+}
+
 .terminal-field {
   display: flex;
   flex-direction: column;
