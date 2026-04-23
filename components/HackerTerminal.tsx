@@ -1324,7 +1324,7 @@ export function HackerTerminal({
               <li>Sign in with Google only.</li>
               <li>Complete the email OTP verification until login succeeds.</li>
               <li>Do not use other login methods because Circle session retrieval will fail.</li>
-              <li>After login, copy userToken and encryptionKey, then paste them into this form.</li>
+              <li>After login, copy Dev Credential, then paste them into this form.</li>
             </ol>
 
             <div className="ops-field-grid">
