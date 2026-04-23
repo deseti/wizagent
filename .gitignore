@@ -5,6 +5,7 @@ coverage/
 dist/
 artifacts/
 cache/
+doc/WizPay Hackathon Strategy Guide (Ultimate).txt
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
