@@ -366,7 +366,7 @@ function normalizeCsvExecutableAgents(agents: unknown, wallet: Address | null) {
       throw new Error(`Agent ${idSource} has an invalid role.`);
     }
 
-    if (!isAddress(walletSource)) {
+    if (typeof walletSource !== "string" || !isAddress(walletSource)) {
       throw new Error(`Agent ${idSource} has an invalid wallet.`);
     }
 
