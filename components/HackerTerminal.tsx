@@ -54,6 +54,61 @@ type SmartPastePayload = {
   treasuryAddress?: string;
 };
 
+type AgentEconomyDebugState = {
+  allowance?: string | null;
+  approvalTxHash?: string | null;
+  balance?: string | null;
+  contract?: string | null;
+  signer?: string | null;
+  treasury?: string | null;
+};
+
+type AgentEconomyResultRow = {
+  href: string;
+  taskId: string;
+  txHash: string;
+};
+
+type AgentEconomyStreamMessage =
+  | {
+      debug: AgentEconomyDebugState;
+      total: number;
+      type: "debug";
+    }
+  | {
+      message: string;
+      progress: number;
+      task_id?: string;
+      total: number;
+      txHash?: string;
+      type: "status";
+    }
+  | {
+      progress: number;
+      result: {
+        href: string;
+        task_id: string;
+        txHash: string;
+      };
+      total: number;
+      type: "result";
+    }
+  | {
+      debug: AgentEconomyDebugState;
+      progress: number;
+      total: number;
+      type: "done";
+    }
+  | {
+      cause: string;
+      debug: AgentEconomyDebugState;
+      error: string;
+      progress: number;
+      task_id?: string;
+      total: number;
+      type: "error";
+    };
+
 type HackerTerminalProps = {
   chainId: number;
   chainName: string;
@@ -67,6 +122,29 @@ const MAX_LOG_LINES = 120;
 const ARCSCAN_BASE_URL = arcTestnet.blockExplorers.default.url;
 const DEFAULT_USDC_DECIMALS = 6;
 const DEFAULT_APPROVAL_WHOLE_UNITS = 1_000_000n;
+const AGENT_ECONOMY_TASK_COUNT = 50;
+const AGENT_ECONOMY_IDLE_MESSAGE =
+  "Idle. Launch the agent economy lane to watch 50 separate Arc transactions appear one by one.";
+const DEFAULT_AGENT_ECONOMY_AGENTS = [
+  {
+    id: "a",
+    role: "analyst",
+    wallet: "0x1111111111111111111111111111111111111111",
+    cost: 0.002,
+  },
+  {
+    id: "b",
+    role: "validator",
+    wallet: "0x2222222222222222222222222222222222222222",
+    cost: 0.001,
+  },
+  {
+    id: "c",
+    role: "executor",
+    wallet: "0x3333333333333333333333333333333333333333",
+    cost: 0.003,
+  },
+] as const;
 const CUSTOM_TREASURY_ROUTE_ENABLED =
   process.env.NEXT_PUBLIC_ENABLE_CUSTOM_TREASURY_ROUTE === "true";
 
@@ -106,6 +184,21 @@ function isSmartPastePayload(value: unknown): value is SmartPastePayload {
     typeof value.walletId === "string" &&
     (typeof value.treasuryAddress === "undefined" ||
       typeof value.treasuryAddress === "string")
+  );
+}
+
+function isAgentEconomyDebugState(value: unknown): value is AgentEconomyDebugState {
+  return isRecord(value);
+}
+
+function isAgentEconomyResultPayload(
+  value: unknown
+): value is { href: string; task_id: string; txHash: string } {
+  return (
+    isRecord(value) &&
+    typeof value.task_id === "string" &&
+    typeof value.txHash === "string" &&
+    typeof value.href === "string"
   );
 }
 
@@ -297,11 +390,27 @@ export function HackerTerminal({
   const [lastGrossCharge, setLastGrossCharge] = useState<bigint | null>(null);
   const [lastSwapCount, setLastSwapCount] = useState<bigint>(0n);
   const [lastTreasuryFeeQuote, setLastTreasuryFeeQuote] = useState<bigint>(0n);
+  const [agentEconomyDebug, setAgentEconomyDebug] = useState<AgentEconomyDebugState>({});
+  const [agentEconomyError, setAgentEconomyError] = useState<string | null>(null);
+  const [agentEconomyResults, setAgentEconomyResults] = useState<AgentEconomyResultRow[]>(
+    []
+  );
+  const [isAgentEconomyRunning, setIsAgentEconomyRunning] = useState(false);
+  const [agentEconomyStatus, setAgentEconomyStatus] = useState(
+    AGENT_ECONOMY_IDLE_MESSAGE
+  );
+  const [agentEconomyTotal, setAgentEconomyTotal] = useState(
+    AGENT_ECONOMY_TASK_COUNT
+  );
   const executionRef = useRef(0);
   const activeExecutionRef = useRef<ActivePayrollExecution | null>(null);
+  const agentEconomyAbortRef = useRef<AbortController | null>(null);
+  const agentEconomyViewportRef = useRef<HTMLDivElement | null>(null);
   const glowTimeoutRef = useRef<number | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const explorerLink = lastTxHash ? `${ARCSCAN_BASE_URL}/tx/${lastTxHash}` : null;
+  const lastAgentEconomyResult =
+    agentEconomyResults[agentEconomyResults.length - 1] ?? null;
   const payrollRouterAddress = isAddress(contractAddress)
     ? (contractAddress as Address)
     : null;
@@ -340,6 +449,10 @@ export function HackerTerminal({
       if (glowTimeoutRef.current !== null) {
         window.clearTimeout(glowTimeoutRef.current);
       }
+
+      if (agentEconomyAbortRef.current) {
+        agentEconomyAbortRef.current.abort();
+      }
     };
   }, []);
 
@@ -351,6 +464,15 @@ export function HackerTerminal({
 
     viewport.scrollTop = viewport.scrollHeight;
   }, [deferredLogs]);
+
+  useEffect(() => {
+    const viewport = agentEconomyViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    viewport.scrollTop = viewport.scrollHeight;
+  }, [agentEconomyResults, agentEconomyStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -437,6 +559,295 @@ export function HackerTerminal({
       ]);
     });
   }, []);
+
+  const handleAgentEconomyMessage = useCallback(
+    (message: AgentEconomyStreamMessage) => {
+      setAgentEconomyTotal(message.total);
+
+      if (message.type === "debug") {
+        setAgentEconomyDebug((current) => ({
+          ...current,
+          ...message.debug,
+        }));
+        return;
+      }
+
+      if (message.type === "status") {
+        setAgentEconomyStatus(message.message);
+
+        if (message.message !== "Holding for 1 second before the next task transaction.") {
+          appendLog({
+            tag: "AGENT",
+            message: message.message,
+            tone: "amber",
+            ...(message.txHash
+              ? {
+                  href: `${ARCSCAN_BASE_URL}/tx/${message.txHash}`,
+                  hrefLabel: "Open ArcScan TX",
+                }
+              : {}),
+          });
+        }
+
+        return;
+      }
+
+      if (message.type === "result") {
+        setAgentEconomyResults((current) => [
+          ...current,
+          {
+            href: message.result.href,
+            taskId: message.result.task_id,
+            txHash: message.result.txHash,
+          },
+        ]);
+        setAgentEconomyStatus(
+          `${message.progress}/${message.total} task transactions confirmed on Arc.`
+        );
+        appendLog({
+          tag: `AE-${String(message.progress).padStart(2, "0")}`,
+          message: `${message.result.task_id} confirmed as its own transaction ${shortenHex(message.result.txHash)}.`,
+          tone: "amber",
+          href: message.result.href,
+          hrefLabel: "Open ArcScan TX",
+        });
+        return;
+      }
+
+      if (message.type === "done") {
+        setAgentEconomyDebug((current) => ({
+          ...current,
+          ...message.debug,
+        }));
+        setAgentEconomyStatus(
+          `Agent economy complete. ${message.progress}/${message.total} separate task transactions confirmed.`
+        );
+        appendLog({
+          tag: "AGENT",
+          message: `Agent economy complete with ${message.progress} separate task transactions.`,
+          tone: "matrix",
+        });
+        return;
+      }
+
+      setAgentEconomyDebug((current) => ({
+        ...current,
+        ...message.debug,
+      }));
+      setAgentEconomyError(message.error);
+      setAgentEconomyStatus(
+        message.task_id
+          ? `${message.task_id} failed: ${message.error}`
+          : message.error
+      );
+      appendLog({
+        tag: "AGENT",
+        message: message.task_id
+          ? `Agent economy failed at ${message.task_id}: ${message.error}`
+          : `Agent economy failed: ${message.error}`,
+        tone: "amber",
+      });
+    },
+    [appendLog]
+  );
+
+  const handleRunAgentEconomy = useCallback(async () => {
+    if (isAgentEconomyRunning) {
+      return;
+    }
+
+    agentEconomyAbortRef.current?.abort();
+
+    const abortController = new AbortController();
+    const decoder = new TextDecoder();
+    let lineBuffer = "";
+
+    agentEconomyAbortRef.current = abortController;
+    setIsAgentEconomyRunning(true);
+    setAgentEconomyError(null);
+    setAgentEconomyResults([]);
+    setAgentEconomyDebug({});
+    setAgentEconomyTotal(AGENT_ECONOMY_TASK_COUNT);
+    setAgentEconomyStatus(
+      "Booting the 50-task agent economy lane. Separate contract calls will arrive one by one."
+    );
+    appendLog({
+      tag: "AGENT",
+      message:
+        "Agent economy request dispatched to /api/agent-economy. Expect 50 separate Arc transactions, not one batch sweep.",
+      tone: "amber",
+    });
+
+    const processStreamLine = (line: string) => {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) {
+        return;
+      }
+
+      const parsedValue = JSON.parse(trimmedLine) as unknown;
+      if (!isRecord(parsedValue) || typeof parsedValue.type !== "string") {
+        return;
+      }
+
+      if (
+        parsedValue.type === "debug" &&
+        isAgentEconomyDebugState(parsedValue.debug) &&
+        typeof parsedValue.total === "number"
+      ) {
+        handleAgentEconomyMessage({
+          debug: parsedValue.debug,
+          total: parsedValue.total,
+          type: "debug",
+        });
+        return;
+      }
+
+      if (
+        parsedValue.type === "status" &&
+        typeof parsedValue.message === "string" &&
+        typeof parsedValue.progress === "number" &&
+        typeof parsedValue.total === "number"
+      ) {
+        handleAgentEconomyMessage({
+          message: parsedValue.message,
+          progress: parsedValue.progress,
+          ...(typeof parsedValue.task_id === "string"
+            ? { task_id: parsedValue.task_id }
+            : {}),
+          total: parsedValue.total,
+          ...(typeof parsedValue.txHash === "string"
+            ? { txHash: parsedValue.txHash }
+            : {}),
+          type: "status",
+        });
+        return;
+      }
+
+      if (
+        parsedValue.type === "result" &&
+        typeof parsedValue.progress === "number" &&
+        typeof parsedValue.total === "number" &&
+        isAgentEconomyResultPayload(parsedValue.result)
+      ) {
+        handleAgentEconomyMessage({
+          progress: parsedValue.progress,
+          result: {
+            href: parsedValue.result.href,
+            task_id: parsedValue.result.task_id,
+            txHash: parsedValue.result.txHash,
+          },
+          total: parsedValue.total,
+          type: "result",
+        });
+        return;
+      }
+
+      if (
+        parsedValue.type === "done" &&
+        typeof parsedValue.progress === "number" &&
+        typeof parsedValue.total === "number" &&
+        isAgentEconomyDebugState(parsedValue.debug)
+      ) {
+        handleAgentEconomyMessage({
+          debug: parsedValue.debug,
+          progress: parsedValue.progress,
+          total: parsedValue.total,
+          type: "done",
+        });
+        return;
+      }
+
+      if (
+        parsedValue.type === "error" &&
+        typeof parsedValue.error === "string" &&
+        typeof parsedValue.progress === "number" &&
+        typeof parsedValue.total === "number" &&
+        isAgentEconomyDebugState(parsedValue.debug)
+      ) {
+        handleAgentEconomyMessage({
+          cause:
+            typeof parsedValue.cause === "string"
+              ? parsedValue.cause
+              : "invalid contract config",
+          debug: parsedValue.debug,
+          error: parsedValue.error,
+          progress: parsedValue.progress,
+          ...(typeof parsedValue.task_id === "string"
+            ? { task_id: parsedValue.task_id }
+            : {}),
+          total: parsedValue.total,
+          type: "error",
+        });
+      }
+    };
+
+    try {
+      const response = await fetch("/api/agent-economy", {
+        body: JSON.stringify({
+          execute: true,
+          task_count: AGENT_ECONOMY_TASK_COUNT,
+          agents: DEFAULT_AGENT_ECONOMY_AGENTS,
+        }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+        signal: abortController.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        const fallbackText = await response.text().catch(() => "");
+        throw new Error(
+          fallbackText || `Agent economy request failed with status ${response.status}.`
+        );
+      }
+
+      const reader = response.body.getReader();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        lineBuffer += decoder.decode(value, { stream: true });
+
+        let newlineIndex = lineBuffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          processStreamLine(lineBuffer.slice(0, newlineIndex));
+          lineBuffer = lineBuffer.slice(newlineIndex + 1);
+          newlineIndex = lineBuffer.indexOf("\n");
+        }
+      }
+
+      const trailingLine = `${lineBuffer}${decoder.decode()}`.trim();
+      if (trailingLine) {
+        processStreamLine(trailingLine);
+      }
+    } catch (error) {
+      if (
+        error instanceof DOMException &&
+        error.name === "AbortError"
+      ) {
+        return;
+      }
+
+      const message = normalizeError(error);
+      setAgentEconomyError(message);
+      setAgentEconomyStatus(message);
+      appendLog({
+        tag: "AGENT",
+        message: `Agent economy request failed before the stream completed: ${message}`,
+        tone: "amber",
+      });
+    } finally {
+      if (agentEconomyAbortRef.current === abortController) {
+        agentEconomyAbortRef.current = null;
+      }
+
+      setIsAgentEconomyRunning(false);
+    }
+  }, [appendLog, handleAgentEconomyMessage, isAgentEconomyRunning]);
 
   const recordAgentPaidEvent = useCallback(
     ({
@@ -1326,6 +1737,118 @@ export function HackerTerminal({
                 </span>
                 <span>{isRunning ? "State: Watching Chain" : "State: Armed"}</span>
               </div>
+            </div>
+          </section>
+
+          <section className="window-card agent-economy-card">
+            <div className="window-bar agent-economy-bar">
+              <div className="window-controls" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+              <p>agent-economy://50-separate-txs</p>
+              <span className="window-badge is-amber">INDIVIDUAL RECEIPTS</span>
+            </div>
+
+            <div className="agent-economy-body">
+              <div className="agent-economy-launch-row">
+                <div className="agent-economy-copy">
+                  <p className="intel-label">Agent Economy</p>
+                  <h2>50 independent task transactions</h2>
+                  <p className="agent-economy-hint">
+                    This lane does not reuse the batch payroll sweep. It fires 50
+                    separate <code>batchPayAgents([wallet], [taskHash], treasury)</code>{" "}
+                    calls and reveals every tx hash as it lands.
+                  </p>
+                </div>
+
+                <div className="agent-economy-actions">
+                  <button
+                    className="agent-economy-button"
+                    disabled={isAgentEconomyRunning}
+                    onClick={() => {
+                      void handleRunAgentEconomy();
+                    }}
+                    type="button"
+                  >
+                    {isAgentEconomyRunning
+                      ? "Running Agent Economy..."
+                      : "RUN AGENT ECONOMY (50 TASKS)"}
+                  </button>
+                  <p className="agent-economy-button-hint">
+                    One task equals one on-chain transaction, with a 1-second hold
+                    between task sends.
+                  </p>
+                </div>
+              </div>
+
+              <div className="agent-economy-metrics" aria-live="polite">
+                <span>Mode: 50 separate txs</span>
+                <span>
+                  Confirmed: {agentEconomyResults.length}/{agentEconomyTotal}
+                </span>
+                <span>
+                  Signer:{" "}
+                  {agentEconomyDebug.signer
+                    ? shortenAddress(agentEconomyDebug.signer)
+                    : "pending"}
+                </span>
+                <span>
+                  Allowance: {agentEconomyDebug.allowance ?? "pending"}
+                </span>
+                <span>
+                  Last TX:{" "}
+                  {lastAgentEconomyResult
+                    ? shortenHex(lastAgentEconomyResult.txHash)
+                    : "awaiting first receipt"}
+                </span>
+              </div>
+
+              <div className="agent-economy-stream-shell">
+                <div
+                  className="agent-economy-stream"
+                  ref={agentEconomyViewportRef}
+                >
+                  {agentEconomyResults.length > 0 ? (
+                    agentEconomyResults.map((result, index) => (
+                      <article className="agent-economy-row" key={result.txHash}>
+                        <span className="agent-economy-index">
+                          #{String(index + 1).padStart(2, "0")}
+                        </span>
+                        <div className="agent-economy-result-copy">
+                          <strong>{result.taskId}</strong>
+                          <code>{result.txHash}</code>
+                        </div>
+                        <a
+                          className="terminal-link"
+                          href={result.href}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Open ArcScan TX
+                        </a>
+                      </article>
+                    ))
+                  ) : (
+                    <div className="agent-economy-empty">
+                      <p>No task receipts yet.</p>
+                      <span>
+                        Batch payroll still shows one hash. This stream will fill with
+                        50 separate explorer links.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <p
+                className={`agent-economy-status-copy ${
+                  agentEconomyError ? "is-error" : ""
+                }`}
+              >
+                {agentEconomyError ?? agentEconomyStatus}
+              </p>
             </div>
           </section>
         </div>

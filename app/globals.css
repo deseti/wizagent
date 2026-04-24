@@ -262,6 +262,12 @@ h2 {
   letter-spacing: 0.12em;
 }
 
+.window-badge.is-amber {
+  border-color: rgba(255, 204, 115, 0.42);
+  background: rgba(255, 204, 115, 0.08);
+  color: var(--amber);
+}
+
 .telemetry-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -409,6 +415,195 @@ h2 {
   opacity: 0.56;
   transform: none;
   box-shadow: none;
+}
+
+.agent-economy-card {
+  border-color: rgba(255, 204, 115, 0.24);
+  background:
+    linear-gradient(180deg, rgba(25, 16, 7, 0.96), rgba(6, 4, 2, 0.98)),
+    radial-gradient(circle at top right, rgba(255, 204, 115, 0.12), transparent 38%);
+}
+
+.agent-economy-bar {
+  border-bottom-color: rgba(255, 204, 115, 0.18);
+  background: rgba(24, 16, 9, 0.92);
+}
+
+.agent-economy-body {
+  display: grid;
+  gap: 18px;
+  padding: 22px 18px 20px;
+}
+
+.agent-economy-launch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 0.9fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.agent-economy-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-economy-copy h2 {
+  margin: 0;
+  color: #fff4d9;
+  font-size: 1.16rem;
+  letter-spacing: 0.02em;
+}
+
+.agent-economy-hint {
+  margin: 0;
+  color: rgba(238, 224, 198, 0.82);
+  line-height: 1.75;
+}
+
+.agent-economy-hint code {
+  color: var(--amber);
+}
+
+.agent-economy-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-economy-button {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(255, 204, 115, 0.42);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(255, 204, 115, 0.22), rgba(255, 124, 61, 0.16)),
+    linear-gradient(180deg, rgba(37, 21, 10, 0.96), rgba(19, 10, 5, 0.98));
+  color: #fff1c8;
+  cursor: pointer;
+  padding: 16px 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
+}
+
+.agent-economy-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 160, 92, 0.74);
+  box-shadow: 0 0 28px rgba(255, 160, 92, 0.16);
+}
+
+.agent-economy-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  transform: none;
+  box-shadow: none;
+}
+
+.agent-economy-button-hint {
+  margin: 0;
+  color: rgba(238, 224, 198, 0.72);
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.agent-economy-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.agent-economy-metrics span {
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 204, 115, 0.2);
+  border-radius: 999px;
+  background: rgba(19, 11, 5, 0.9);
+  color: rgba(255, 236, 195, 0.84);
+  font-size: 0.78rem;
+}
+
+.agent-economy-stream-shell {
+  border: 1px solid rgba(255, 204, 115, 0.14);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(18, 11, 5, 0.94), rgba(8, 5, 2, 0.98)),
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 204, 115, 0.04),
+      rgba(255, 204, 115, 0.04) 1px,
+      transparent 1px,
+      transparent 22px
+    );
+  overflow: hidden;
+}
+
+.agent-economy-stream {
+  max-height: 360px;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.agent-economy-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 13px 14px;
+  border: 1px solid rgba(255, 204, 115, 0.14);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(255, 204, 115, 0.08), rgba(255, 124, 61, 0.05));
+}
+
+.agent-economy-index {
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: rgba(255, 204, 115, 0.08);
+  color: var(--amber);
+  font-size: 0.74rem;
+  letter-spacing: 0.12em;
+}
+
+.agent-economy-result-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.agent-economy-result-copy strong {
+  color: #fff4d9;
+  font-size: 0.92rem;
+}
+
+.agent-economy-result-copy code {
+  color: rgba(255, 236, 195, 0.74);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.agent-economy-empty {
+  display: grid;
+  gap: 8px;
+  padding: 26px 18px;
+}
+
+.agent-economy-empty p {
+  margin: 0;
+  color: #fff4d9;
+}
+
+.agent-economy-empty span {
+  color: rgba(238, 224, 198, 0.74);
+  line-height: 1.7;
+}
+
+.agent-economy-status-copy {
+  margin: 0;
+  color: rgba(255, 236, 195, 0.88);
+  line-height: 1.65;
+}
+
+.agent-economy-status-copy.is-error {
+  color: var(--amber);
 }
 
 .run-metrics {
@@ -700,6 +895,10 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .agent-economy-launch-row {
+    grid-template-columns: 1fr;
+  }
+
   .action-row,
   .window-bar {
     flex-direction: column;
@@ -734,11 +933,16 @@ h2 {
     gap: 4px;
   }
 
+  .agent-economy-row {
+    grid-template-columns: 1fr;
+  }
+
   .terminal-tag {
     font-size: 0.8rem;
   }
 
-  .execute-button {
+  .execute-button,
+  .agent-economy-button {
     width: 100%;
   }
 }

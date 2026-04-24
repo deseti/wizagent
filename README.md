@@ -15,6 +15,46 @@ What is intentionally not included:
 - the hackathon nano-payment contract and simulator
 - the full Circle auth/passkey UI from the production frontend
 
+## Agent Economy API
+
+This scaffold now includes a deterministic JSON-only planner route at `app/api/agent-economy/route.ts`.
+
+Supported actions:
+- `plan`: convert `user_intent` into `{ goal, mode, task_count, max_cost_per_task, priority }`
+- `tasks`: generate alternating `analyze` / `validate` / `execute` micro-payment tasks
+- `assign`: map tasks to agents by role and lowest cost
+- `validate`: approve or reject an assignment payment
+- `run`: execute the full pipeline in one request
+
+Example request body:
+
+```json
+{
+  "action": "run",
+  "user_intent": "Process 12 urgent on-chain QA tasks and pay matching agents",
+  "agents": [
+    {
+      "id": "agent-analyst-1",
+      "role": "analyst",
+      "wallet": "0x1111111111111111111111111111111111111111",
+      "cost": 0.002
+    },
+    {
+      "id": "agent-validator-1",
+      "role": "validator",
+      "wallet": "0x2222222222222222222222222222222222222222",
+      "cost": 0.001
+    },
+    {
+      "id": "agent-executor-1",
+      "role": "executor",
+      "wallet": "0x3333333333333333333333333333333333333333",
+      "cost": 0.003
+    }
+  ]
+}
+```
+
 ## Setup
 
 1. Copy `.env.example` to `.env.local`.
