@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type ChangeEvent,
   useCallback,
   startTransition,
   useDeferredValue,
@@ -63,6 +64,15 @@ type AgentEconomyDebugState = {
   treasury?: string | null;
 };
 
+type AgentEconomyAgentRole = "analyst" | "executor" | "validator";
+
+type AgentEconomyAgentInput = {
+  cost: number;
+  id: string;
+  role: AgentEconomyAgentRole;
+  wallet?: Address;
+};
+
 type AgentEconomyResultRow = {
   href: string;
   taskId: string;
@@ -123,28 +133,26 @@ const ARCSCAN_BASE_URL = arcTestnet.blockExplorers.default.url;
 const DEFAULT_USDC_DECIMALS = 6;
 const DEFAULT_APPROVAL_WHOLE_UNITS = 1_000_000n;
 const AGENT_ECONOMY_TASK_COUNT = 50;
+const DUMMY_WALLET_ADDRESS = "0x1111111111111111111111111111111111111111";
 const AGENT_ECONOMY_IDLE_MESSAGE =
   "Idle. Launch the agent economy lane to watch 50 separate Arc transactions appear one by one.";
 const DEFAULT_AGENT_ECONOMY_AGENTS = [
   {
     id: "a",
     role: "analyst",
-    wallet: "0x1111111111111111111111111111111111111111",
     cost: 0.002,
   },
   {
     id: "b",
     role: "validator",
-    wallet: "0x2222222222222222222222222222222222222222",
     cost: 0.001,
   },
   {
     id: "c",
     role: "executor",
-    wallet: "0x3333333333333333333333333333333333333333",
     cost: 0.003,
   },
-] as const;
+] satisfies readonly AgentEconomyAgentInput[];
 const CUSTOM_TREASURY_ROUTE_ENABLED =
   process.env.NEXT_PUBLIC_ENABLE_CUSTOM_TREASURY_ROUTE === "true";
 
@@ -200,6 +208,83 @@ function isAgentEconomyResultPayload(
     typeof value.txHash === "string" &&
     typeof value.href === "string"
   );
+}
+
+function isAgentEconomyRole(value: string): value is AgentEconomyAgentRole {
+  return value === "analyst" || value === "validator" || value === "executor";
+}
+
+function parseCsvCell(value: string) {
+  const trimmedValue = value.trim();
+
+  if (
+    (trimmedValue.startsWith('"') && trimmedValue.endsWith('"')) ||
+    (trimmedValue.startsWith("'") && trimmedValue.endsWith("'"))
+  ) {
+    return trimmedValue.slice(1, -1).trim();
+  }
+
+  return trimmedValue;
+}
+
+function parseAgentEconomyCsv(csvText: string): AgentEconomyAgentInput[] {
+  const lines = csvText
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    throw new Error("CSV must include a header row and at least one agent row.");
+  }
+
+  const headerCells = lines[0].split(",").map(parseCsvCell);
+  if (
+    headerCells.length !== 3 ||
+    headerCells[0] !== "wallet" ||
+    headerCells[1] !== "role" ||
+    headerCells[2] !== "cost"
+  ) {
+    throw new Error('CSV header must be exactly "wallet,role,cost".');
+  }
+
+  return lines.slice(1).map((line, index) => {
+    const rowNumber = index + 2;
+    const cells = line.split(",").map(parseCsvCell);
+
+    if (cells.length !== 3) {
+      throw new Error(`Row ${rowNumber} must contain exactly 3 comma-separated values.`);
+    }
+
+    const [walletCell, roleCell, costCell] = cells;
+    const normalizedRole = roleCell.toLowerCase();
+    const normalizedWallet = walletCell;
+    const parsedCost = Number(costCell);
+
+    if (!isAddress(normalizedWallet)) {
+      throw new Error(`Row ${rowNumber} has an invalid wallet address.`);
+    }
+
+    if (normalizedWallet.toLowerCase() === DUMMY_WALLET_ADDRESS.toLowerCase()) {
+      throw new Error(`Row ${rowNumber} uses the blocked dummy wallet address.`);
+    }
+
+    if (!isAgentEconomyRole(normalizedRole)) {
+      throw new Error(
+        `Row ${rowNumber} must use role analyst, validator, or executor.`
+      );
+    }
+
+    if (!Number.isFinite(parsedCost)) {
+      throw new Error(`Row ${rowNumber} must include a numeric cost.`);
+    }
+
+    return {
+      cost: parsedCost,
+      id: `csv-agent-${index + 1}`,
+      role: normalizedRole,
+      wallet: normalizedWallet as Address,
+    } satisfies AgentEconomyAgentInput;
+  });
 }
 
 function getNestedString(source: unknown, path: string[]) {
@@ -390,6 +475,11 @@ export function HackerTerminal({
   const [lastGrossCharge, setLastGrossCharge] = useState<bigint | null>(null);
   const [lastSwapCount, setLastSwapCount] = useState<bigint>(0n);
   const [lastTreasuryFeeQuote, setLastTreasuryFeeQuote] = useState<bigint>(0n);
+  const [agentCsvError, setAgentCsvError] = useState<string | null>(null);
+  const [agentCsvFileName, setAgentCsvFileName] = useState<string>("");
+  const [parsedAgentEconomyAgents, setParsedAgentEconomyAgents] = useState<
+    AgentEconomyAgentInput[]
+  >([]);
   const [agentEconomyDebug, setAgentEconomyDebug] = useState<AgentEconomyDebugState>({});
   const [agentEconomyError, setAgentEconomyError] = useState<string | null>(null);
   const [agentEconomyResults, setAgentEconomyResults] = useState<AgentEconomyResultRow[]>(
@@ -405,6 +495,7 @@ export function HackerTerminal({
   const executionRef = useRef(0);
   const activeExecutionRef = useRef<ActivePayrollExecution | null>(null);
   const agentEconomyAbortRef = useRef<AbortController | null>(null);
+  const agentEconomyCsvInputRef = useRef<HTMLInputElement | null>(null);
   const agentEconomyViewportRef = useRef<HTMLDivElement | null>(null);
   const glowTimeoutRef = useRef<number | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -418,6 +509,24 @@ export function HackerTerminal({
   const displayedTreasuryAddress = CUSTOM_TREASURY_ROUTE_ENABLED
     ? treasuryAddress.trim() || contractTreasuryAddress.trim() || envTreasuryAddress
     : contractTreasuryAddress.trim() || envTreasuryAddress || treasuryAddress.trim();
+  const fallbackAgentEconomyWallet =
+    displayedTreasuryAddress && isAddress(displayedTreasuryAddress)
+      ? (displayedTreasuryAddress as Address)
+      : null;
+  const selectedAgentEconomyAgents =
+    parsedAgentEconomyAgents.length > 0
+      ? parsedAgentEconomyAgents
+      : DEFAULT_AGENT_ECONOMY_AGENTS.map((agent) => ({
+          ...agent,
+          ...(fallbackAgentEconomyWallet ? { wallet: fallbackAgentEconomyWallet } : {}),
+        }));
+  const previewAgentEconomyWallets = Array.from(
+    new Set(
+      selectedAgentEconomyAgents
+        .map((agent) => agent.wallet)
+        .filter((wallet): wallet is Address => typeof wallet === "string" && isAddress(wallet))
+    )
+  );
   const approvalAmount = DEFAULT_APPROVAL_WHOLE_UNITS * 10n ** BigInt(usdcDecimals);
   const hasCredentialInputs = Boolean(userTokenInput.trim() || encryptionKeyInput.trim());
 
@@ -651,8 +760,80 @@ export function HackerTerminal({
     [appendLog]
   );
 
+  const handleAgentCsvUpload = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+
+      if (!file) {
+        return;
+      }
+
+      try {
+        const csvText = await file.text();
+        const parsedAgents = parseAgentEconomyCsv(csvText);
+
+        setParsedAgentEconomyAgents(parsedAgents);
+        setAgentCsvError(null);
+        setAgentCsvFileName(file.name);
+        setAgentEconomyStatus(
+          `Loaded ${parsedAgents.length} agent recipients from ${file.name}.`
+        );
+        appendLog({
+          tag: "CSV",
+          message: `Agent CSV parsed successfully with ${parsedAgents.length} wallet rows.`,
+          tone: "cyan",
+        });
+      } catch (error) {
+        const message = normalizeError(error);
+
+        setParsedAgentEconomyAgents([]);
+        setAgentCsvError(message);
+        setAgentCsvFileName(file.name);
+        setAgentEconomyStatus(message);
+        appendLog({
+          tag: "CSV",
+          message: `Agent CSV rejected: ${message}`,
+          tone: "amber",
+        });
+      } finally {
+        event.target.value = "";
+      }
+    },
+    [appendLog]
+  );
+
+  const handleClearAgentCsv = useCallback(() => {
+    setParsedAgentEconomyAgents([]);
+    setAgentCsvError(null);
+    setAgentCsvFileName("");
+    setAgentEconomyStatus(AGENT_ECONOMY_IDLE_MESSAGE);
+
+    if (agentEconomyCsvInputRef.current) {
+      agentEconomyCsvInputRef.current.value = "";
+    }
+
+    appendLog({
+      tag: "CSV",
+      message: "Agent CSV cleared. The agent economy lane is back to treasury fallback mode.",
+      tone: "muted",
+    });
+  }, [appendLog]);
+
   const handleRunAgentEconomy = useCallback(async () => {
     if (isAgentEconomyRunning) {
+      return;
+    }
+
+    if (parsedAgentEconomyAgents.length === 0 && !fallbackAgentEconomyWallet) {
+      const message =
+        "Agent economy needs either a valid CSV wallet list or a valid treasury fallback address.";
+      setAgentEconomyError(message);
+      setAgentEconomyStatus(message);
+      appendLog({
+        tag: "AGENT",
+        message,
+        tone: "amber",
+      });
       return;
     }
 
@@ -673,8 +854,11 @@ export function HackerTerminal({
     );
     appendLog({
       tag: "AGENT",
-      message:
-        "Agent economy request dispatched to /api/agent-economy. Expect 50 separate Arc transactions, not one batch sweep.",
+      message: `Agent economy request dispatched with ${
+        parsedAgentEconomyAgents.length > 0
+          ? `${parsedAgentEconomyAgents.length} CSV-provided agent wallet(s)`
+          : "treasury fallback wallets"
+      }. Expect 50 separate Arc transactions, not one batch sweep.`,
       tone: "amber",
     });
 
@@ -786,7 +970,8 @@ export function HackerTerminal({
         body: JSON.stringify({
           execute: true,
           task_count: AGENT_ECONOMY_TASK_COUNT,
-          agents: DEFAULT_AGENT_ECONOMY_AGENTS,
+          agents: selectedAgentEconomyAgents,
+          ...(fallbackAgentEconomyWallet ? { wallet: fallbackAgentEconomyWallet } : {}),
         }),
         headers: {
           "Content-Type": "application/json",
@@ -847,7 +1032,14 @@ export function HackerTerminal({
 
       setIsAgentEconomyRunning(false);
     }
-  }, [appendLog, handleAgentEconomyMessage, isAgentEconomyRunning]);
+  }, [
+    appendLog,
+    fallbackAgentEconomyWallet,
+    handleAgentEconomyMessage,
+    isAgentEconomyRunning,
+    parsedAgentEconomyAgents.length,
+    selectedAgentEconomyAgents,
+  ]);
 
   const recordAgentPaidEvent = useCallback(
     ({
@@ -1761,6 +1953,42 @@ export function HackerTerminal({
                     separate <code>batchPayAgents([wallet], [taskHash], treasury)</code>{" "}
                     calls and reveals every tx hash as it lands.
                   </p>
+
+                  <div className="agent-economy-csv-panel">
+                    <label className="terminal-field agent-economy-csv-field">
+                      <span>Agent Wallet CSV</span>
+                      <input
+                        accept=".csv,text/csv"
+                        onChange={(event) => {
+                          void handleAgentCsvUpload(event);
+                        }}
+                        ref={agentEconomyCsvInputRef}
+                        type="file"
+                      />
+                    </label>
+                    <div className="agent-economy-csv-meta">
+                      <p>
+                        Format: <code>wallet,role,cost</code>
+                      </p>
+                      <p>
+                        {agentCsvFileName
+                          ? `Loaded file: ${agentCsvFileName}`
+                          : "No CSV uploaded yet. Treasury fallback will be used instead."}
+                      </p>
+                    </div>
+                    {parsedAgentEconomyAgents.length > 0 ? (
+                      <button
+                        className="subtle-button agent-economy-clear-button"
+                        onClick={handleClearAgentCsv}
+                        type="button"
+                      >
+                        Clear CSV
+                      </button>
+                    ) : null}
+                    {agentCsvError ? (
+                      <p className="agent-economy-csv-error">{agentCsvError}</p>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className="agent-economy-actions">
@@ -1780,6 +2008,29 @@ export function HackerTerminal({
                     One task equals one on-chain transaction, with a 1-second hold
                     between task sends.
                   </p>
+                  <div className="agent-economy-preview-card">
+                    <strong>Recipient Preview</strong>
+                    <span>Total agents: {selectedAgentEconomyAgents.length}</span>
+                    <span>
+                      Source:{" "}
+                      {parsedAgentEconomyAgents.length > 0
+                        ? "CSV upload"
+                        : fallbackAgentEconomyWallet
+                          ? "Treasury fallback"
+                          : "Awaiting valid wallet source"}
+                    </span>
+                    <div className="agent-economy-wallet-list">
+                      {previewAgentEconomyWallets.length > 0 ? (
+                        previewAgentEconomyWallets.map((wallet) => (
+                          <code key={wallet}>{wallet}</code>
+                        ))
+                      ) : (
+                        <span className="agent-economy-wallet-empty">
+                          No valid wallets loaded yet.
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
 

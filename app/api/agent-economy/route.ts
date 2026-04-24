@@ -65,6 +65,7 @@ export async function POST(request: Request) {
         void executeAgentEconomy({
           agents: payload.agents,
           onEvent: pushEvent,
+          payloadWallet: payload.wallet,
           taskCount:
             typeof taskCount === "number" && Number.isFinite(taskCount)
               ? taskCount

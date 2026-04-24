@@ -29,6 +29,7 @@ const DEFAULT_ARC_RPC_URLS = [
   "https://rpc.blockdaemon.testnet.arc.network",
 ] as const;
 const DEFAULT_USDC_ADDRESS = "0x3600000000000000000000000000000000000000";
+const DUMMY_WALLET_ADDRESS = "0x1111111111111111111111111111111111111111";
 const ARCSCAN_BASE_URL = "https://testnet.arcscan.app";
 
 export type AgentEconomyFailureCause =
@@ -91,6 +92,7 @@ export type AgentEconomyStreamEvent =
 type ExecuteAgentEconomyInput = {
   agents: unknown;
   onEvent: (event: AgentEconomyStreamEvent) => Promise<void> | void;
+  payloadWallet?: unknown;
   taskCount: number;
 };
 
@@ -213,6 +215,10 @@ function waitFor(ms: number) {
   });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 function getConfiguredContractAddress() {
   return (
     process.env.WIZPAY_AGENTIC_PRO_ADDRESS ??
@@ -252,10 +258,66 @@ function getConfiguredTreasuryAddress() {
   );
 }
 
-function buildExecutableAssignments(taskCount: number, agents: unknown) {
+function resolveExecutionWallet(payloadWallet?: unknown): Address | null {
+  const candidateWallet =
+    typeof payloadWallet === "string" && payloadWallet.trim()
+      ? payloadWallet.trim()
+      : getConfiguredTreasuryAddress()?.trim() ?? "";
+
+  if (!candidateWallet) {
+    return null;
+  }
+
+  if (!isAddress(candidateWallet)) {
+    throw new Error("Invalid wallet address");
+  }
+
+  if (candidateWallet.toLowerCase() === DUMMY_WALLET_ADDRESS.toLowerCase()) {
+    throw new Error("Dummy wallet not allowed");
+  }
+
+  return candidateWallet as Address;
+}
+
+function injectExecutionWalletIntoAgents(agents: unknown, wallet: Address | null) {
+  if (!Array.isArray(agents)) {
+    return agents;
+  }
+
+  return agents.map((agent, index) => {
+    if (!isRecord(agent)) {
+      return agent;
+    }
+
+    const candidateWallet =
+      typeof agent.wallet === "string" && agent.wallet.trim()
+        ? agent.wallet.trim()
+        : wallet ?? "";
+
+    if (!isAddress(candidateWallet)) {
+      throw new Error(`Invalid wallet address for agent row ${index + 1}.`);
+    }
+
+    if (candidateWallet.toLowerCase() === DUMMY_WALLET_ADDRESS.toLowerCase()) {
+      throw new Error("Dummy wallet not allowed");
+    }
+
+    return {
+      ...agent,
+      wallet: candidateWallet as Address,
+    };
+  });
+}
+
+function buildExecutableAssignments(
+  taskCount: number,
+  agents: unknown,
+  wallet: Address | null
+) {
+  const normalizedAgents = injectExecutionWalletIntoAgents(agents, wallet);
   const tasks = createTasks({ task_count: taskCount }).tasks;
   const assignments = createAssignments({
-    agents,
+    agents: normalizedAgents,
     tasks,
   }).assignments;
 
@@ -423,6 +485,7 @@ async function sendWithFallback({
 export async function executeAgentEconomy({
   agents,
   onEvent,
+  payloadWallet,
   taskCount,
 }: ExecuteAgentEconomyInput) {
   const rpcUrls = buildArcRpcUrls();
@@ -446,6 +509,7 @@ export async function executeAgentEconomy({
   try {
     const contractAddress = getRequiredContractAddress();
     const usdcAddress = getRequiredUsdcAddress();
+    const executionWallet = resolveExecutionWallet(payloadWallet);
     resolvedContractAddress = contractAddress;
     resolvedUsdcAddress = usdcAddress;
 
@@ -459,7 +523,11 @@ export async function executeAgentEconomy({
     const normalizedPrivateKey = normalizePrivateKey(signerKey);
     signerAccount = privateKeyToAccount(normalizedPrivateKey);
 
-    const executableAssignments = buildExecutableAssignments(taskCount, agents);
+    const executableAssignments = buildExecutableAssignments(
+      taskCount,
+      agents,
+      executionWallet
+    );
     totalTaskCount = executableAssignments.length;
 
     const [decimalsValue, contractTreasury] = await Promise.all([
