@@ -223,6 +223,27 @@ function getConfiguredContractAddress() {
   );
 }
 
+function getRequiredContractAddress(): Address {
+  const configuredContractAddress = getConfiguredContractAddress();
+
+  if (!configuredContractAddress || !isAddress(configuredContractAddress)) {
+    throw new Error("WizPayAgenticPro contract address is missing or invalid.");
+  }
+
+  return configuredContractAddress as Address;
+}
+
+function getRequiredUsdcAddress(): Address {
+  const configuredUsdcAddress =
+    process.env.WIZPAY_USDC_ADDRESS ?? DEFAULT_USDC_ADDRESS;
+
+  if (!isAddress(configuredUsdcAddress)) {
+    throw new Error("USDC token address is missing or invalid.");
+  }
+
+  return configuredUsdcAddress as Address;
+}
+
 function getConfiguredTreasuryAddress() {
   return (
     process.env.WIZPAY_TREASURY_ADDRESS ??
@@ -412,10 +433,9 @@ export async function executeAgentEconomy({
       timeout: 20_000,
     }),
   });
-  const usdcAddressValue = process.env.WIZPAY_USDC_ADDRESS ?? DEFAULT_USDC_ADDRESS;
   let signerAccount: ReturnType<typeof privateKeyToAccount> | null = null;
-  let contractAddress: Address | null = null;
-  let usdcAddress: Address | null = null;
+  let resolvedContractAddress: Address | null = null;
+  let resolvedUsdcAddress: Address | null = null;
   let totalTaskCount =
     Number.isFinite(taskCount) && taskCount > 0 ? Math.trunc(taskCount) : 50;
   let approvalTxHash: Hex | null = null;
@@ -424,15 +444,10 @@ export async function executeAgentEconomy({
   let allowanceWasInsufficient = false;
 
   try {
-    const configuredContractAddress = getConfiguredContractAddress();
-
-    if (!configuredContractAddress || !isAddress(configuredContractAddress)) {
-      throw new Error("WizPayAgenticPro contract address is missing or invalid.");
-    }
-
-    if (!isAddress(usdcAddressValue)) {
-      throw new Error("USDC token address is missing or invalid.");
-    }
+    const contractAddress = getRequiredContractAddress();
+    const usdcAddress = getRequiredUsdcAddress();
+    resolvedContractAddress = contractAddress;
+    resolvedUsdcAddress = usdcAddress;
 
     const signerKey = process.env.ARC_DEPLOYER_PRIVATE_KEY ?? "";
     if (!signerKey.trim()) {
@@ -443,8 +458,6 @@ export async function executeAgentEconomy({
 
     const normalizedPrivateKey = normalizePrivateKey(signerKey);
     signerAccount = privateKeyToAccount(normalizedPrivateKey);
-    contractAddress = configuredContractAddress as Address;
-    usdcAddress = usdcAddressValue as Address;
 
     const executableAssignments = buildExecutableAssignments(taskCount, agents);
     totalTaskCount = executableAssignments.length;
@@ -679,16 +692,16 @@ export async function executeAgentEconomy({
       allowance: null,
       ...(approvalTxHash ? { approvalTxHash } : {}),
       balance: null,
-      contract: contractAddress,
+      contract: resolvedContractAddress,
       signer: signerAccount?.address ?? null,
     } satisfies AgentEconomyDebug;
     const debugState =
-      signerAccount && contractAddress && usdcAddress
+      signerAccount && resolvedContractAddress && resolvedUsdcAddress
         ? await (async () => {
             const decimals = Number(
               await primaryPublicClient
                 .readContract({
-                  address: usdcAddress,
+                  address: resolvedUsdcAddress,
                   abi: ERC20_ABI,
                   functionName: "decimals",
                 })
@@ -698,10 +711,10 @@ export async function executeAgentEconomy({
             return collectDebugState({
               accountAddress: signerAccount.address,
               approvalTxHash,
-              contractAddress,
+              contractAddress: resolvedContractAddress,
               decimals,
               publicClient: primaryPublicClient,
-              usdcAddress,
+              usdcAddress: resolvedUsdcAddress,
             }).catch(() => fallbackDebugState);
           })()
         : fallbackDebugState;
