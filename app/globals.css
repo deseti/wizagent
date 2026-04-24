@@ -57,7 +57,6 @@ pre {
 
 .hero-panel,
 .window-card,
-.division-card,
 .ops-card,
 .treasury-card,
 .intel-card,
@@ -87,11 +86,9 @@ pre {
 }
 
 .hero-kicker,
-.division-id,
 .treasury-label,
 .intel-label,
-.telemetry-card span,
-.treasury-metrics span {
+.telemetry-card span {
   margin: 0 0 10px;
   color: var(--cyan);
   font-size: 0.78rem;
@@ -166,37 +163,6 @@ h2 {
 .terminal-main-column {
   display: grid;
   gap: 22px;
-}
-
-.division-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
-}
-
-.division-card {
-  padding: 22px;
-  background: linear-gradient(180deg, rgba(11, 24, 31, 0.92), rgba(3, 8, 11, 0.96));
-}
-
-.division-card p {
-  color: var(--muted);
-  line-height: 1.7;
-}
-
-.division-card h2 {
-  margin-bottom: 12px;
-}
-
-.division-status {
-  display: inline-flex;
-  margin-top: 18px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: rgba(92, 255, 182, 0.08);
-  border: 1px solid rgba(92, 255, 182, 0.14);
-  color: var(--matrix);
-  font-size: 0.78rem;
 }
 
 .window-card {
@@ -477,6 +443,13 @@ h2 {
   cursor: pointer;
 }
 
+.agent-economy-csv-helper {
+  margin: 0;
+  color: rgba(255, 236, 195, 0.8);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
 .agent-economy-csv-meta {
   display: grid;
   gap: 6px;
@@ -493,17 +466,42 @@ h2 {
   color: var(--amber);
 }
 
-.agent-economy-clear-button {
+.agent-economy-clear-button,
+.agent-economy-template-button {
   justify-self: start;
   border: 1px solid rgba(255, 204, 115, 0.24);
   color: rgba(255, 236, 195, 0.9);
 }
 
+.agent-economy-csv-summary {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 204, 115, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 204, 115, 0.05);
+}
+
+.agent-economy-csv-summary span {
+  color: rgba(255, 236, 195, 0.84);
+  font-size: 0.78rem;
+}
+
+.agent-economy-csv-warning,
+.agent-economy-csv-detail,
 .agent-economy-csv-error {
   margin: 0;
-  color: var(--amber);
   font-size: 0.78rem;
   line-height: 1.6;
+}
+
+.agent-economy-csv-warning,
+.agent-economy-csv-error {
+  color: var(--amber);
+}
+
+.agent-economy-csv-detail {
+  color: rgba(255, 236, 195, 0.72);
 }
 
 .agent-economy-actions {
@@ -893,23 +891,12 @@ h2 {
   word-break: break-word;
 }
 
-.treasury-metrics {
-  display: grid;
-  gap: 12px;
-  margin-top: 22px;
-}
-
-.treasury-metrics div {
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: rgba(9, 20, 26, 0.88);
-}
-
-.treasury-metrics strong {
-  display: block;
-  color: var(--text);
-  font-size: 1rem;
+.treasury-status-copy {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(98, 216, 255, 0.14);
+  color: rgba(214, 238, 247, 0.76);
+  line-height: 1.7;
 }
 
 .intel-card ul {
@@ -971,7 +958,6 @@ h2 {
 }
 
 @media (max-width: 900px) {
-  .division-grid,
   .telemetry-grid {
     grid-template-columns: 1fr;
   }
@@ -1002,7 +988,6 @@ h2 {
   }
 
   .hero-panel,
-  .division-card,
   .treasury-card,
   .intel-card,
   .telemetry-card {

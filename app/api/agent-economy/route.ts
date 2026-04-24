@@ -64,6 +64,7 @@ export async function POST(request: Request) {
 
         void executeAgentEconomy({
           agents: payload.agents,
+          csvMode: payload.csv_mode === true || payload.csvMode === true,
           onEvent: pushEvent,
           payloadWallet: payload.wallet,
           taskCount:

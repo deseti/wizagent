@@ -91,9 +91,23 @@ export type AgentEconomyStreamEvent =
 
 type ExecuteAgentEconomyInput = {
   agents: unknown;
+  csvMode?: boolean;
   onEvent: (event: AgentEconomyStreamEvent) => Promise<void> | void;
   payloadWallet?: unknown;
   taskCount: number;
+};
+
+const TASK_TYPE_BY_AGENT_ROLE = {
+  analyst: "analyze",
+  executor: "execute",
+  validator: "validate",
+} as const;
+
+type CsvExecutableAgent = {
+  cost: number;
+  id: string;
+  role: keyof typeof TASK_TYPE_BY_AGENT_ROLE;
+  wallet: Address;
 };
 
 type ExecutableAssignment = Assignment & {
@@ -219,6 +233,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function toFiniteNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function isCsvAgentRole(
+  value: unknown
+): value is keyof typeof TASK_TYPE_BY_AGENT_ROLE {
+  return value === "analyst" || value === "validator" || value === "executor";
+}
+
 function getConfiguredContractAddress() {
   return (
     process.env.WIZPAY_AGENTIC_PRO_ADDRESS ??
@@ -309,11 +342,83 @@ function injectExecutionWalletIntoAgents(agents: unknown, wallet: Address | null
   });
 }
 
+function normalizeCsvExecutableAgents(agents: unknown, wallet: Address | null) {
+  const normalizedAgents = injectExecutionWalletIntoAgents(agents, wallet);
+
+  if (!Array.isArray(normalizedAgents) || normalizedAgents.length === 0) {
+    throw new Error("agents must be a non-empty array.");
+  }
+
+  return normalizedAgents.map((agent, index) => {
+    if (!isRecord(agent)) {
+      throw new Error(`Agent row ${index + 1} must be a JSON object.`);
+    }
+
+    const idSource = agent.id ?? agent.agent_id;
+    const walletSource = agent.wallet ?? agent.address;
+    const costValue = toFiniteNumber(agent.cost);
+
+    if (typeof idSource !== "string" || !idSource.trim()) {
+      throw new Error(`Agent row ${index + 1} is missing an id.`);
+    }
+
+    if (!isCsvAgentRole(agent.role)) {
+      throw new Error(`Agent ${idSource} has an invalid role.`);
+    }
+
+    if (!isAddress(walletSource)) {
+      throw new Error(`Agent ${idSource} has an invalid wallet.`);
+    }
+
+    if (costValue === null || costValue <= 0) {
+      throw new Error(`Agent ${idSource} must include a positive numeric cost.`);
+    }
+
+    return {
+      cost: costValue,
+      id: idSource.trim(),
+      role: agent.role,
+      wallet: walletSource as Address,
+    } satisfies CsvExecutableAgent;
+  });
+}
+
+function buildCsvExecutableAssignments(agents: unknown, wallet: Address | null) {
+  return normalizeCsvExecutableAgents(agents, wallet).map((agent, index) => {
+    const taskType = TASK_TYPE_BY_AGENT_ROLE[agent.role];
+    const assignment = {
+      agent_id: agent.id,
+      reward: agent.cost,
+      task_id: `task-${index + 1}`,
+      task_type: taskType,
+      wallet: agent.wallet,
+    } satisfies ExecutableAssignment;
+
+    const validation = validateAssignment({
+      assignment,
+      task_type: taskType,
+    });
+
+    if (!validation.approved) {
+      throw new Error(
+        `Assignment validation failed for ${assignment.task_id}: ${validation.reason}`
+      );
+    }
+
+    return assignment;
+  });
+}
+
 function buildExecutableAssignments(
   taskCount: number,
   agents: unknown,
-  wallet: Address | null
+  wallet: Address | null,
+  csvMode = false
 ) {
+  if (csvMode) {
+    return buildCsvExecutableAssignments(agents, wallet);
+  }
+
   const normalizedAgents = injectExecutionWalletIntoAgents(agents, wallet);
   const tasks = createTasks({ task_count: taskCount }).tasks;
   const assignments = createAssignments({
@@ -484,6 +589,7 @@ async function sendWithFallback({
 
 export async function executeAgentEconomy({
   agents,
+  csvMode,
   onEvent,
   payloadWallet,
   taskCount,
@@ -526,7 +632,8 @@ export async function executeAgentEconomy({
     const executableAssignments = buildExecutableAssignments(
       taskCount,
       agents,
-      executionWallet
+      executionWallet,
+      csvMode === true
     );
     totalTaskCount = executableAssignments.length;
 
@@ -582,7 +689,7 @@ export async function executeAgentEconomy({
 
     await onEvent({
       message:
-        "Agent economy lane armed. 50 tasks will fan out into 50 separate on-chain transactions.",
+        `Agent economy lane armed. ${totalTaskCount} task${totalTaskCount === 1 ? "" : "s"} will fan out into ${totalTaskCount} separate on-chain transactions.`,
       progress,
       total: totalTaskCount,
       type: "status",

@@ -73,6 +73,21 @@ type AgentEconomyAgentInput = {
   wallet?: Address;
 };
 
+type AgentEconomyCsvSkippedRow = {
+  raw: string;
+  reason: string;
+  rowNumber: number;
+};
+
+type AgentEconomyCsvParseResult = {
+  agents: AgentEconomyAgentInput[];
+  fileError: string | null;
+  skippedReasons: AgentEconomyCsvSkippedRow[];
+  skippedRows: number;
+  totalRows: number;
+  validAgents: number;
+};
+
 type AgentEconomyResultRow = {
   href: string;
   taskId: string;
@@ -134,6 +149,14 @@ const DEFAULT_USDC_DECIMALS = 6;
 const DEFAULT_APPROVAL_WHOLE_UNITS = 1_000_000n;
 const AGENT_ECONOMY_TASK_COUNT = 50;
 const DUMMY_WALLET_ADDRESS = "0x1111111111111111111111111111111111111111";
+const AGENT_CSV_TEMPLATE_CONTENT = [
+  "wallet,role,cost",
+  "0xYourWallet1,analyst,0.002",
+  "0xYourWallet2,validator,0.001",
+  "0xYourWallet3,executor,0.003",
+].join("\n");
+const AGENT_CSV_STRICT_ERROR =
+  "CSV contains invalid rows. Please fix before running.";
 const AGENT_ECONOMY_IDLE_MESSAGE =
   "Idle. Launch the agent economy lane to watch 50 separate Arc transactions appear one by one.";
 const DEFAULT_AGENT_ECONOMY_AGENTS = [
@@ -155,27 +178,6 @@ const DEFAULT_AGENT_ECONOMY_AGENTS = [
 ] satisfies readonly AgentEconomyAgentInput[];
 const CUSTOM_TREASURY_ROUTE_ENABLED =
   process.env.NEXT_PUBLIC_ENABLE_CUSTOM_TREASURY_ROUTE === "true";
-
-const divisions = [
-  {
-    id: "DIV-01",
-    name: "Signal Hunters",
-    description: "Task intake, duplicate trap, and payroll queue formation.",
-    status: "50 task hashes primed",
-  },
-  {
-    id: "DIV-02",
-    name: "Validation Mesh",
-    description: "Anti-spam screening and settlement policy enforcement.",
-    status: "taskHash shield active",
-  },
-  {
-    id: "DIV-03",
-    name: "Translator (EURC)",
-    description: "Cross-currency routing for agents that require EURC settlement.",
-    status: "fx lanes and LP fee taps armed",
-  },
-] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -227,16 +229,25 @@ function parseCsvCell(value: string) {
   return trimmedValue;
 }
 
-function parseAgentEconomyCsv(csvText: string): AgentEconomyAgentInput[] {
+function parseAgentEconomyCsv(csvText: string): AgentEconomyCsvParseResult {
   const lines = csvText
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .filter(Boolean);
 
   if (lines.length < 2) {
-    throw new Error("CSV must include a header row and at least one agent row.");
+    return {
+      agents: [],
+      fileError: "CSV must include a header row and at least one agent row.",
+      skippedReasons: [],
+      skippedRows: 0,
+      totalRows: 0,
+      validAgents: 0,
+    };
   }
 
+  const dataLines = lines.slice(1);
+  const totalRows = dataLines.length;
   const headerCells = lines[0].split(",").map(parseCsvCell);
   if (
     headerCells.length !== 3 ||
@@ -244,15 +255,34 @@ function parseAgentEconomyCsv(csvText: string): AgentEconomyAgentInput[] {
     headerCells[1] !== "role" ||
     headerCells[2] !== "cost"
   ) {
-    throw new Error('CSV header must be exactly "wallet,role,cost".');
+    return {
+      agents: [],
+      fileError: 'CSV header must be exactly "wallet,role,cost".',
+      skippedReasons: dataLines.map((line, index) => ({
+        raw: line,
+        reason: "Skipped because the CSV header is invalid.",
+        rowNumber: index + 2,
+      })),
+      skippedRows: totalRows,
+      totalRows,
+      validAgents: 0,
+    };
   }
 
-  return lines.slice(1).map((line, index) => {
+  const agents: AgentEconomyAgentInput[] = [];
+  const skippedReasons: AgentEconomyCsvSkippedRow[] = [];
+
+  dataLines.forEach((line, index) => {
     const rowNumber = index + 2;
     const cells = line.split(",").map(parseCsvCell);
 
     if (cells.length !== 3) {
-      throw new Error(`Row ${rowNumber} must contain exactly 3 comma-separated values.`);
+      skippedReasons.push({
+        raw: line,
+        reason: `Row ${rowNumber} must contain exactly 3 comma-separated values.`,
+        rowNumber,
+      });
+      return;
     }
 
     const [walletCell, roleCell, costCell] = cells;
@@ -261,30 +291,57 @@ function parseAgentEconomyCsv(csvText: string): AgentEconomyAgentInput[] {
     const parsedCost = Number(costCell);
 
     if (!isAddress(normalizedWallet)) {
-      throw new Error(`Row ${rowNumber} has an invalid wallet address.`);
+      skippedReasons.push({
+        raw: line,
+        reason: `Row ${rowNumber} has an invalid wallet address.`,
+        rowNumber,
+      });
+      return;
     }
 
     if (normalizedWallet.toLowerCase() === DUMMY_WALLET_ADDRESS.toLowerCase()) {
-      throw new Error(`Row ${rowNumber} uses the blocked dummy wallet address.`);
+      skippedReasons.push({
+        raw: line,
+        reason: `Row ${rowNumber} uses the blocked dummy wallet address.`,
+        rowNumber,
+      });
+      return;
     }
 
     if (!isAgentEconomyRole(normalizedRole)) {
-      throw new Error(
-        `Row ${rowNumber} must use role analyst, validator, or executor.`
-      );
+      skippedReasons.push({
+        raw: line,
+        reason: `Row ${rowNumber} must use role analyst, validator, or executor.`,
+        rowNumber,
+      });
+      return;
     }
 
-    if (!Number.isFinite(parsedCost)) {
-      throw new Error(`Row ${rowNumber} must include a numeric cost.`);
+    if (!Number.isFinite(parsedCost) || parsedCost <= 0) {
+      skippedReasons.push({
+        raw: line,
+        reason: `Row ${rowNumber} must include a positive numeric cost.`,
+        rowNumber,
+      });
+      return;
     }
 
-    return {
+    agents.push({
       cost: parsedCost,
       id: `csv-agent-${index + 1}`,
       role: normalizedRole,
       wallet: normalizedWallet as Address,
-    } satisfies AgentEconomyAgentInput;
+    } satisfies AgentEconomyAgentInput);
   });
+
+  return {
+    agents,
+    fileError: null,
+    skippedReasons,
+    skippedRows: skippedReasons.length,
+    totalRows,
+    validAgents: agents.length,
+  };
 }
 
 function getNestedString(source: unknown, path: string[]) {
@@ -396,7 +453,7 @@ function buildBootLogs(contractAddress: string): LogEntry[] {
     {
       id: createLogId(),
       tag: "BOOT",
-      message: "WizPay hacker terminal online. Three AI divisions and Treasury-Bot linked.",
+      message: "WizPay terminal online. Treasury route and execution lanes linked.",
       tone: "matrix",
     },
     {
@@ -470,13 +527,15 @@ export function HackerTerminal({
   const [isInjectionGlowActive, setIsInjectionGlowActive] = useState(false);
   const [treasuryBalance, setTreasuryBalance] = useState<bigint | null>(null);
   const [usdcDecimals, setUsdcDecimals] = useState(DEFAULT_USDC_DECIMALS);
-  const [sessionFeeLift, setSessionFeeLift] = useState<bigint>(0n);
+  const [, setSessionFeeLift] = useState<bigint>(0n);
   const [lastTxHash, setLastTxHash] = useState<Hex | null>(null);
   const [lastGrossCharge, setLastGrossCharge] = useState<bigint | null>(null);
-  const [lastSwapCount, setLastSwapCount] = useState<bigint>(0n);
-  const [lastTreasuryFeeQuote, setLastTreasuryFeeQuote] = useState<bigint>(0n);
+  const [, setLastSwapCount] = useState<bigint>(0n);
+  const [, setLastTreasuryFeeQuote] = useState<bigint>(0n);
   const [agentCsvError, setAgentCsvError] = useState<string | null>(null);
   const [agentCsvFileName, setAgentCsvFileName] = useState<string>("");
+  const [agentCsvSummary, setAgentCsvSummary] =
+    useState<AgentEconomyCsvParseResult | null>(null);
   const [parsedAgentEconomyAgents, setParsedAgentEconomyAgents] = useState<
     AgentEconomyAgentInput[]
   >([]);
@@ -513,13 +572,28 @@ export function HackerTerminal({
     displayedTreasuryAddress && isAddress(displayedTreasuryAddress)
       ? (displayedTreasuryAddress as Address)
       : null;
+  const hasUploadedAgentCsv = agentCsvSummary !== null;
   const selectedAgentEconomyAgents =
-    parsedAgentEconomyAgents.length > 0
+    hasUploadedAgentCsv
       ? parsedAgentEconomyAgents
       : DEFAULT_AGENT_ECONOMY_AGENTS.map((agent) => ({
           ...agent,
           ...(fallbackAgentEconomyWallet ? { wallet: fallbackAgentEconomyWallet } : {}),
         }));
+  const hasInvalidAgentCsv =
+    Boolean(agentCsvSummary?.fileError) || (agentCsvSummary?.skippedRows ?? 0) > 0;
+  const agentEconomyExecutionCount = hasUploadedAgentCsv
+    ? parsedAgentEconomyAgents.length
+    : AGENT_ECONOMY_TASK_COUNT;
+  const agentEconomyDisplayCount =
+    isAgentEconomyRunning || agentEconomyResults.length > 0
+      ? agentEconomyTotal
+      : agentEconomyExecutionCount;
+  const isAgentEconomyRunDisabled =
+    isAgentEconomyRunning ||
+    (hasUploadedAgentCsv
+      ? hasInvalidAgentCsv || parsedAgentEconomyAgents.length === 0
+      : !fallbackAgentEconomyWallet);
   const previewAgentEconomyWallets = Array.from(
     new Set(
       selectedAgentEconomyAgents
@@ -711,7 +785,7 @@ export function HackerTerminal({
           },
         ]);
         setAgentEconomyStatus(
-          `${message.progress}/${message.total} task transactions confirmed on Arc.`
+          `${message.progress}/${message.total} independent transactions confirmed on Arc.`
         );
         appendLog({
           tag: `AE-${String(message.progress).padStart(2, "0")}`,
@@ -729,11 +803,11 @@ export function HackerTerminal({
           ...message.debug,
         }));
         setAgentEconomyStatus(
-          `Agent economy complete. ${message.progress}/${message.total} separate task transactions confirmed.`
+          `Agent economy complete. ${message.progress}/${message.total} independent transactions confirmed.`
         );
         appendLog({
           tag: "AGENT",
-          message: `Agent economy complete with ${message.progress} separate task transactions.`,
+          message: `Agent economy complete with ${message.progress} independent transactions.`,
           tone: "matrix",
         });
         return;
@@ -760,6 +834,27 @@ export function HackerTerminal({
     [appendLog]
   );
 
+  const handleDownloadAgentCsvTemplate = useCallback(() => {
+    const blob = new Blob([AGENT_CSV_TEMPLATE_CONTENT], {
+      type: "text/csv;charset=utf-8",
+    });
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const downloadLink = document.createElement("a");
+
+    downloadLink.href = downloadUrl;
+    downloadLink.download = "agents_template.csv";
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    downloadLink.remove();
+    window.URL.revokeObjectURL(downloadUrl);
+
+    appendLog({
+      tag: "CSV",
+      message: "Agent CSV template downloaded.",
+      tone: "muted",
+    });
+  }, [appendLog]);
+
   const handleAgentCsvUpload = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
@@ -770,25 +865,54 @@ export function HackerTerminal({
 
       try {
         const csvText = await file.text();
-        const parsedAgents = parseAgentEconomyCsv(csvText);
+        const csvReport = parseAgentEconomyCsv(csvText);
+        const hasStrictCsvError =
+          Boolean(csvReport.fileError) || csvReport.skippedRows > 0;
+        const skippedRowLabel = `${csvReport.skippedRows} skipped row${
+          csvReport.skippedRows === 1 ? "" : "s"
+        }`;
+        const nextStatus = csvReport.fileError
+          ? csvReport.fileError
+          : hasStrictCsvError
+            ? `Loaded ${csvReport.validAgents} valid agent recipients from ${file.name}; ${skippedRowLabel}.`
+            : `Loaded ${csvReport.validAgents} agent recipients from ${file.name}.`;
 
-        setParsedAgentEconomyAgents(parsedAgents);
-        setAgentCsvError(null);
+        setParsedAgentEconomyAgents(csvReport.agents);
+        setAgentCsvSummary(csvReport);
+        setAgentCsvError(hasStrictCsvError ? AGENT_CSV_STRICT_ERROR : null);
         setAgentCsvFileName(file.name);
-        setAgentEconomyStatus(
-          `Loaded ${parsedAgents.length} agent recipients from ${file.name}.`
-        );
+        setAgentEconomyDebug({});
+        setAgentEconomyError(null);
+        setAgentEconomyResults([]);
+        setAgentEconomyStatus(nextStatus);
+        setAgentEconomyTotal(csvReport.validAgents);
+
+        if (csvReport.fileError || csvReport.skippedReasons.length > 0) {
+          console.warn("Agent CSV validation details", {
+            file: file.name,
+            fileError: csvReport.fileError,
+            skippedReasons: csvReport.skippedReasons,
+          });
+        }
+
         appendLog({
           tag: "CSV",
-          message: `Agent CSV parsed successfully with ${parsedAgents.length} wallet rows.`,
-          tone: "cyan",
+          message: hasStrictCsvError
+            ? `Agent CSV loaded with ${csvReport.validAgents} valid row(s) and ${csvReport.skippedRows} skipped row(s).`
+            : `Agent CSV parsed successfully with ${csvReport.validAgents} wallet rows.`,
+          tone: hasStrictCsvError ? "amber" : "cyan",
         });
       } catch (error) {
         const message = normalizeError(error);
 
         setParsedAgentEconomyAgents([]);
+        setAgentCsvSummary(null);
         setAgentCsvError(message);
         setAgentCsvFileName(file.name);
+        setAgentEconomyDebug({});
+        setAgentEconomyError(null);
+        setAgentEconomyResults([]);
+        setAgentEconomyTotal(0);
         setAgentEconomyStatus(message);
         appendLog({
           tag: "CSV",
@@ -806,6 +930,11 @@ export function HackerTerminal({
     setParsedAgentEconomyAgents([]);
     setAgentCsvError(null);
     setAgentCsvFileName("");
+    setAgentCsvSummary(null);
+    setAgentEconomyDebug({});
+    setAgentEconomyError(null);
+    setAgentEconomyResults([]);
+    setAgentEconomyTotal(AGENT_ECONOMY_TASK_COUNT);
     setAgentEconomyStatus(AGENT_ECONOMY_IDLE_MESSAGE);
 
     if (agentEconomyCsvInputRef.current) {
@@ -824,7 +953,18 @@ export function HackerTerminal({
       return;
     }
 
-    if (parsedAgentEconomyAgents.length === 0 && !fallbackAgentEconomyWallet) {
+    if (hasUploadedAgentCsv && (hasInvalidAgentCsv || parsedAgentEconomyAgents.length === 0)) {
+      setAgentCsvError(AGENT_CSV_STRICT_ERROR);
+      setAgentEconomyStatus(AGENT_CSV_STRICT_ERROR);
+      appendLog({
+        tag: "CSV",
+        message: "Agent CSV blocked execution because strict validation failed.",
+        tone: "amber",
+      });
+      return;
+    }
+
+    if (!hasUploadedAgentCsv && !fallbackAgentEconomyWallet) {
       const message =
         "Agent economy needs either a valid CSV wallet list or a valid treasury fallback address.";
       setAgentEconomyError(message);
@@ -848,17 +988,17 @@ export function HackerTerminal({
     setAgentEconomyError(null);
     setAgentEconomyResults([]);
     setAgentEconomyDebug({});
-    setAgentEconomyTotal(AGENT_ECONOMY_TASK_COUNT);
+    setAgentEconomyTotal(agentEconomyExecutionCount);
     setAgentEconomyStatus(
-      "Booting the 50-task agent economy lane. Separate contract calls will arrive one by one."
+      `Booting ${agentEconomyExecutionCount} independent transactions. Separate contract calls will arrive one by one.`
     );
     appendLog({
       tag: "AGENT",
       message: `Agent economy request dispatched with ${
-        parsedAgentEconomyAgents.length > 0
+        hasUploadedAgentCsv
           ? `${parsedAgentEconomyAgents.length} CSV-provided agent wallet(s)`
           : "treasury fallback wallets"
-      }. Expect 50 separate Arc transactions, not one batch sweep.`,
+      }. Expect ${agentEconomyExecutionCount} separate Arc transactions, not one batch sweep.`,
       tone: "amber",
     });
 
@@ -969,7 +1109,8 @@ export function HackerTerminal({
       const response = await fetch("/api/agent-economy", {
         body: JSON.stringify({
           execute: true,
-          task_count: AGENT_ECONOMY_TASK_COUNT,
+          csv_mode: hasUploadedAgentCsv,
+          task_count: agentEconomyExecutionCount,
           agents: selectedAgentEconomyAgents,
           ...(fallbackAgentEconomyWallet ? { wallet: fallbackAgentEconomyWallet } : {}),
         }),
@@ -1033,9 +1174,12 @@ export function HackerTerminal({
       setIsAgentEconomyRunning(false);
     }
   }, [
+    agentEconomyExecutionCount,
     appendLog,
     fallbackAgentEconomyWallet,
     handleAgentEconomyMessage,
+    hasInvalidAgentCsv,
+    hasUploadedAgentCsv,
     isAgentEconomyRunning,
     parsedAgentEconomyAgents.length,
     selectedAgentEconomyAgents,
@@ -1826,17 +1970,6 @@ export function HackerTerminal({
 
       <section className="terminal-grid">
         <div className="terminal-main-column">
-          <div className="division-grid">
-            {divisions.map((division) => (
-              <article className="division-card" key={division.id}>
-                <p className="division-id">{division.id}</p>
-                <h2>{division.name}</h2>
-                <p>{division.description}</p>
-                <span className="division-status">{division.status}</span>
-              </article>
-            ))}
-          </div>
-
           <section className="window-card">
             <div className="window-bar">
               <div className="window-controls" aria-hidden="true">
@@ -1939,7 +2072,7 @@ export function HackerTerminal({
                 <span />
                 <span />
               </div>
-              <p>agent-economy://50-separate-txs</p>
+              <p>{`agent-economy://${agentEconomyExecutionCount}-separate-txs`}</p>
               <span className="window-badge is-amber">INDIVIDUAL RECEIPTS</span>
             </div>
 
@@ -1947,11 +2080,12 @@ export function HackerTerminal({
               <div className="agent-economy-launch-row">
                 <div className="agent-economy-copy">
                   <p className="intel-label">Agent Economy</p>
-                  <h2>50 independent task transactions</h2>
+                  <h2>{`Running ${agentEconomyExecutionCount} independent transactions`}</h2>
                   <p className="agent-economy-hint">
-                    This lane does not reuse the batch payroll sweep. It fires 50
-                    separate <code>batchPayAgents([wallet], [taskHash], treasury)</code>{" "}
-                    calls and reveals every tx hash as it lands.
+                    This lane does not reuse the batch payroll sweep. It fires{" "}
+                    {agentEconomyExecutionCount} separate{" "}
+                    <code>batchPayAgents([wallet], [taskHash], treasury)</code> calls
+                    and reveals every tx hash as it lands.
                   </p>
 
                   <div className="agent-economy-csv-panel">
@@ -1966,6 +2100,18 @@ export function HackerTerminal({
                         type="file"
                       />
                     </label>
+                    <p className="agent-economy-csv-helper">
+                      Upload CSV of agent wallets (wallet, role, cost).
+                      <br />
+                      Each row = 1 on-chain transaction.
+                    </p>
+                    <button
+                      className="subtle-button agent-economy-template-button"
+                      onClick={handleDownloadAgentCsvTemplate}
+                      type="button"
+                    >
+                      Download CSV Template
+                    </button>
                     <div className="agent-economy-csv-meta">
                       <p>
                         Format: <code>wallet,role,cost</code>
@@ -1976,7 +2122,22 @@ export function HackerTerminal({
                           : "No CSV uploaded yet. Treasury fallback will be used instead."}
                       </p>
                     </div>
-                    {parsedAgentEconomyAgents.length > 0 ? (
+                    {agentCsvSummary ? (
+                      <div className="agent-economy-csv-summary">
+                        <span>{`Total rows: ${agentCsvSummary.totalRows}`}</span>
+                        <span>{`Valid agents: ${agentCsvSummary.validAgents}`}</span>
+                        <span>{`Skipped: ${agentCsvSummary.skippedRows}`}</span>
+                      </div>
+                    ) : null}
+                    {agentCsvSummary?.skippedRows ? (
+                      <p className="agent-economy-csv-warning">
+                        Some rows were skipped due to invalid format or address
+                      </p>
+                    ) : null}
+                    {agentCsvSummary?.fileError ? (
+                      <p className="agent-economy-csv-detail">{agentCsvSummary.fileError}</p>
+                    ) : null}
+                    {hasUploadedAgentCsv ? (
                       <button
                         className="subtle-button agent-economy-clear-button"
                         onClick={handleClearAgentCsv}
@@ -1994,7 +2155,7 @@ export function HackerTerminal({
                 <div className="agent-economy-actions">
                   <button
                     className="agent-economy-button"
-                    disabled={isAgentEconomyRunning}
+                    disabled={isAgentEconomyRunDisabled}
                     onClick={() => {
                       void handleRunAgentEconomy();
                     }}
@@ -2002,18 +2163,17 @@ export function HackerTerminal({
                   >
                     {isAgentEconomyRunning
                       ? "Running Agent Economy..."
-                      : "RUN AGENT ECONOMY (50 TASKS)"}
+                      : "RUN AGENT ECONOMY"}
                   </button>
                   <p className="agent-economy-button-hint">
-                    One task equals one on-chain transaction, with a 1-second hold
-                    between task sends.
+                    {`Running ${agentEconomyExecutionCount} independent transactions. One agent equals one on-chain transaction, with a 1-second hold between sends.`}
                   </p>
                   <div className="agent-economy-preview-card">
                     <strong>Recipient Preview</strong>
                     <span>Total agents: {selectedAgentEconomyAgents.length}</span>
                     <span>
                       Source:{" "}
-                      {parsedAgentEconomyAgents.length > 0
+                      {hasUploadedAgentCsv
                         ? "CSV upload"
                         : fallbackAgentEconomyWallet
                           ? "Treasury fallback"
@@ -2035,9 +2195,9 @@ export function HackerTerminal({
               </div>
 
               <div className="agent-economy-metrics" aria-live="polite">
-                <span>Mode: 50 separate txs</span>
+                <span>{`Mode: ${agentEconomyDisplayCount} separate txs`}</span>
                 <span>
-                  Confirmed: {agentEconomyResults.length}/{agentEconomyTotal}
+                  Confirmed: {agentEconomyResults.length}/{agentEconomyDisplayCount}
                 </span>
                 <span>
                   Signer:{" "}
@@ -2086,7 +2246,7 @@ export function HackerTerminal({
                       <p>No task receipts yet.</p>
                       <span>
                         Batch payroll still shows one hash. This stream will fill with
-                        50 separate explorer links.
+                        {` ${agentEconomyDisplayCount} separate explorer links.`}
                       </span>
                     </div>
                   )}
@@ -2266,7 +2426,7 @@ export function HackerTerminal({
           </section>
 
           <section className="treasury-card">
-            <p className="treasury-label">Treasury-Bot (LP Agent)</p>
+            <p className="treasury-label">Treasury Route</p>
             <h2>
               {treasuryBalance !== null
                 ? `${formatAmount(treasuryBalance, usdcDecimals, 6, 6)} USDC`
@@ -2278,39 +2438,15 @@ export function HackerTerminal({
             <code className="treasury-route-copy">
               {displayedTreasuryAddress || "Awaiting treasury route..."}
             </code>
-
-            <div className="treasury-metrics">
-              <div>
-                <span>LP Fee</span>
-                <strong>
-                  {lastSwapCount > 0n
-                    ? `${formatAmount(lastTreasuryFeeQuote, usdcDecimals, 6, 6)} USDC this run`
-                    : "0.300% on EURC swaps"}
-                </strong>
-              </div>
-              <div>
-                <span>Settlement Mode</span>
-                <strong>{lastSwapCount > 0n ? "USDC + EURC this run" : "USDC only this run"}</strong>
-              </div>
-              <div>
-                <span>Bundler Cost</span>
-                <strong>$0.00 sponsored</strong>
-              </div>
-              <div>
-                <span>Session Fee Lift</span>
-                <strong>
-                  {sessionFeeLift > 0n
-                    ? `+${formatAmount(sessionFeeLift, usdcDecimals, 6, 6)} USDC`
-                    : "No treasury fees captured yet"}
-                </strong>
-              </div>
-            </div>
+            <p className="treasury-status-copy">
+              Sponsored execution is active. Payroll and agent transactions settle through this route.
+            </p>
           </section>
 
           <section className="intel-card">
             <p className="intel-label">Ops Snapshot</p>
             <ul>
-              <li>Three AI divisions online.</li>
+              <li>Circle wallet and treasury route are armed for live execution.</li>
               <li>One Circle signature dispatches the full 50-task payroll call.</li>
               <li>Agentic logs are emitted only from on-chain AgentPaid events.</li>
               <li>Gas Fee: $0.00 (ERC-4337 Sponsored).</li>
